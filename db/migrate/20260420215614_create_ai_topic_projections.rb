@@ -2,8 +2,8 @@
 
 class CreateAiTopicProjections < ActiveRecord::Migration[8.0]
   def change
-    create_table :ai_topic_projections, primary_key: :topic_id do |t|
-      t.bigint :topic_id, null: false
+    create_table :ai_topic_projections, id: false do |t|
+      t.bigint :topic_id, null: false, primary_key: true
       t.float :x, null: false
       t.float :y, null: false
       t.integer :model_id, null: false

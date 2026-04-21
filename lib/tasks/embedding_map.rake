@@ -7,11 +7,12 @@ namespace :embedding_map do
     raise "ai_embeddings_selected_model is not configured" if model_id.zero?
 
     config = ActiveRecord::Base.connection_db_config.configuration_hash
-    dsn_parts = [
-      "host=#{config[:host] || "localhost"}",
-      "port=#{config[:port] || 5432}",
-      "dbname=#{config[:database]}",
-    ]
+    # Only set explicit connection params; missing ones let psycopg fall back
+    # to libpq defaults (unix socket, peer auth, PG* env vars), which matches
+    # how Rails is already connecting.
+    dsn_parts = ["dbname=#{config[:database]}"]
+    dsn_parts << "host=#{config[:host]}" if config[:host]
+    dsn_parts << "port=#{config[:port]}" if config[:port]
     dsn_parts << "user=#{config[:username]}" if config[:username]
     dsn_parts << "password=#{config[:password]}" if config[:password]
     dsn = dsn_parts.join(" ")
