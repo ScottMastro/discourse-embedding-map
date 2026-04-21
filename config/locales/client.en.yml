@@ -17,6 +17,7 @@ en:
       legend_clusters: "Clusters"
       play: "▶ Play"
       pause: "⏸ Pause"
+      trending_title: "Trending now"
   admin_js:
     admin:
       site_settings:

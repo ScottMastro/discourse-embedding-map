@@ -30,6 +30,11 @@ const POP_WINDOW_SECONDS = 60 * 60 * 24 * 30 * 3;
 // During playback, points older than this gradually fade to gray.
 const FADE_WINDOW_SECONDS = 60 * 60 * 24 * 365;
 const FADE_COLOR = [170, 170, 170];
+// Trending calculation: "recent" window and how many clusters to show.
+const TRENDING_WINDOW_SECONDS = 60 * 60 * 24 * 30 * 6;
+const TRENDING_TOP_N = 10;
+// Trending list row height — keep in sync with .embedding-map__trending-row.
+const TRENDING_ROW_HEIGHT = 36;
 
 // Deterministic palette for cluster view. 20 colors cycled by cluster_idx.
 const CLUSTER_PALETTE = [
@@ -154,6 +159,114 @@ export default class EmbeddingMapViewer extends Component {
   get labeledClusters() {
     const threshold = this.minLabelSize();
     return this.clusters.filter((c) => c.size >= threshold);
+  }
+
+  // Share-of-voice "weight" per cluster at the current playhead.
+  //   weight(c) = (recent_in_c / total_recent) / (alltime_in_c / total_alltime)
+  //
+  // Weight > 1 means the cluster is overrepresented in the recent window
+  // relative to its historical share — i.e. trending hot. We require a
+  // minimum recent count so a brand-new cluster of 3 topics doesn't dominate.
+  get trendingClusters() {
+    if (this.playhead === null || !this.isClusterView) {
+      return [];
+    }
+    const playhead = this.playhead;
+    const recentBoundary = playhead - TRENDING_WINDOW_SECONDS;
+
+    const alltime = new Map();
+    const recent = new Map();
+    let totalAlltime = 0;
+    let totalRecent = 0;
+
+    for (const p of this.points) {
+      const t = p[CREATED_AT];
+      if (t > playhead) {
+        continue;
+      }
+      const idx = p[CLUSTER_IDX];
+      if (idx === null || idx === undefined || idx < 0) {
+        continue;
+      }
+      alltime.set(idx, (alltime.get(idx) || 0) + 1);
+      totalAlltime++;
+      if (t >= recentBoundary) {
+        recent.set(idx, (recent.get(idx) || 0) + 1);
+        totalRecent++;
+      }
+    }
+
+    if (totalRecent === 0 || totalAlltime === 0) {
+      return [];
+    }
+
+    const MIN_RECENT = 3;
+    const scored = [];
+    for (const [idx, recentCount] of recent) {
+      if (recentCount < MIN_RECENT) {
+        continue;
+      }
+      const alltimeCount = alltime.get(idx) || recentCount;
+      const recentShare = recentCount / totalRecent;
+      const alltimeShare = alltimeCount / totalAlltime;
+      const weight = recentShare / alltimeShare;
+      scored.push({ idx, weight, recentCount });
+    }
+
+    scored.sort((a, b) => b.weight - a.weight);
+    const top = scored.slice(0, TRENDING_TOP_N);
+
+    const clustersByIdx = new Map(this.clusters.map((c) => [c.idx, c]));
+    return top.map((s) => {
+      const c = clustersByIdx.get(s.idx) || {};
+      return {
+        idx: s.idx,
+        color: this.clusterColorFor(s.idx).slice(1),
+        name:
+          c.label || c.keywords?.slice(0, 3).join(", ") || `Cluster ${s.idx}`,
+        weight: s.weight,
+        recentCount: s.recentCount,
+      };
+    });
+  }
+
+  // Rank-indexed map so trending-row template can look up each cluster's
+  // current position for the transform animation.
+  get trendingRankByIdx() {
+    const map = new Map();
+    this.trendingClusters.forEach((t, i) => map.set(t.idx, i));
+    return map;
+  }
+
+  // Entries currently in the top-N with their rank. Each is keyed by cluster
+  // idx in the template, so Ember reuses the same DOM node when the rank
+  // changes and the CSS transition on transform slides it to the new row.
+  // Rows that drop out of the top N disappear; we accept that over the
+  // complexity of a persistent-history cache to keep this a pure getter.
+  get stableTrendingRows() {
+    return this.trendingClusters.map((t, i) => ({
+      ...t,
+      rank: i,
+      visible: true,
+    }));
+  }
+
+  trendingRowStyle(row) {
+    const y = row.rank * TRENDING_ROW_HEIGHT;
+    const opacity = row.visible ? 1 : 0;
+    return trustHTML(`transform:translateY(${y}px);opacity:${opacity}`);
+  }
+
+  trendingSwatchStyle(color) {
+    return trustHTML(`background:#${color}`);
+  }
+
+  formatWeight(w) {
+    return `×${w.toFixed(1)}`;
+  }
+
+  get isTrendingActive() {
+    return this.playhead !== null && this.isClusterView;
   }
 
   get legendEntries() {
@@ -872,27 +985,48 @@ export default class EmbeddingMapViewer extends Component {
       </div>
 
       <aside class="embedding-map__legend">
-        <h3>
-          {{if
-            this.isClusterView
-            (i18n "embedding_map.legend_clusters")
-            (i18n "embedding_map.legend_categories")
-          }}
-        </h3>
-        <ul>
-          {{#each this.legendEntries as |entry|}}
-            <li>
-              <span
-                class="embedding-map__swatch"
-                style={{this.swatchStyle entry.color}}
-              ></span>
-              <span class="embedding-map__legend-name">{{entry.name}}</span>
-              {{#if entry.size}}
-                <span class="embedding-map__legend-size">{{entry.size}}</span>
-              {{/if}}
-            </li>
-          {{/each}}
-        </ul>
+        {{#if this.isTrendingActive}}
+          <h3>{{i18n "embedding_map.trending_title"}}</h3>
+          <div class="embedding-map__trending">
+            {{#each this.stableTrendingRows key="idx" as |row|}}
+              <div
+                class="embedding-map__trending-row"
+                style={{this.trendingRowStyle row}}
+              >
+                <span
+                  class="embedding-map__swatch"
+                  style={{this.trendingSwatchStyle row.color}}
+                ></span>
+                <span class="embedding-map__trending-name">{{row.name}}</span>
+                <span class="embedding-map__trending-weight">{{this.formatWeight
+                    row.weight
+                  }}</span>
+              </div>
+            {{/each}}
+          </div>
+        {{else}}
+          <h3>
+            {{if
+              this.isClusterView
+              (i18n "embedding_map.legend_clusters")
+              (i18n "embedding_map.legend_categories")
+            }}
+          </h3>
+          <ul>
+            {{#each this.legendEntries as |entry|}}
+              <li>
+                <span
+                  class="embedding-map__swatch"
+                  style={{this.swatchStyle entry.color}}
+                ></span>
+                <span class="embedding-map__legend-name">{{entry.name}}</span>
+                {{#if entry.size}}
+                  <span class="embedding-map__legend-size">{{entry.size}}</span>
+                {{/if}}
+              </li>
+            {{/each}}
+          </ul>
+        {{/if}}
       </aside>
     </div>
   </template>
