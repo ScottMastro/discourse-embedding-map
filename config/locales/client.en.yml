@@ -10,8 +10,11 @@ en:
       topics_shown:
         one: "%{count} topic"
         other: "%{count} topics"
-      legend_title: "Category"
       reset_view: "Reset view"
+      tab_category: "Category"
+      tab_clusters: "Clusters"
+      legend_categories: "Category"
+      legend_clusters: "Clusters"
   admin_js:
     admin:
       site_settings:

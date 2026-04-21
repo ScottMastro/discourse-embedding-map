@@ -9,21 +9,48 @@ import { trustHTML } from "@ember/template";
 import { i18n } from "discourse-i18n";
 
 // Index format (matches controller serialization):
-//   [topic_id, x, y, category_id, created_at_epoch, slug, title]
+//   [topic_id, x, y, category_id, created_at_epoch, slug, title, cluster_idx]
 const TOPIC_ID = 0;
 const X = 1;
 const Y = 2;
 const CATEGORY_ID = 3;
 const SLUG = 5;
 const TITLE = 6;
+const CLUSTER_IDX = 7;
 
 const POINT_SIZE = 3;
 const HOVER_RADIUS_PX = 6;
 const GRID_CELLS = 128;
 
+// Deterministic palette for cluster view. 20 colors cycled by cluster_idx.
+const CLUSTER_PALETTE = [
+  "#e6194b",
+  "#3cb44b",
+  "#ffe119",
+  "#4363d8",
+  "#f58231",
+  "#911eb4",
+  "#42d4f4",
+  "#f032e6",
+  "#bfef45",
+  "#fabed4",
+  "#469990",
+  "#dcbeff",
+  "#9a6324",
+  "#800000",
+  "#aaffc3",
+  "#808000",
+  "#ffd8b1",
+  "#000075",
+  "#a9a9a9",
+  "#ff4500",
+];
+const NOISE_COLOR = "#cccccc";
+
 export default class EmbeddingMapViewer extends Component {
   @service router;
 
+  @tracked viewMode = "category";
   @tracked hoveredTitle = null;
   @tracked hoverX = 0;
   @tracked hoverY = 0;
@@ -33,26 +60,20 @@ export default class EmbeddingMapViewer extends Component {
   ctx = null;
   resizeObserver = null;
 
-  // World-space bounds of the raw UMAP output.
   minX = 0;
   maxX = 0;
   minY = 0;
   maxY = 0;
 
-  // View transform: world → screen. scale is pixels per world unit.
   scale = 1;
   offsetX = 0;
   offsetY = 0;
 
-  // Interaction state.
   dragging = false;
   lastPointerX = 0;
   lastPointerY = 0;
   dragMoved = false;
 
-  // Spatial grid for hover hit-testing. Indexed by `row * GRID_CELLS + col`,
-  // each cell holds an array of point indices whose world position falls in
-  // that cell. Rebuilt once after mount; pan/zoom only changes the transform.
   spatialGrid = null;
 
   get points() {
@@ -61,6 +82,10 @@ export default class EmbeddingMapViewer extends Component {
 
   get categories() {
     return this.args.data?.categories ?? [];
+  }
+
+  get clusters() {
+    return this.args.data?.clusters ?? [];
   }
 
   get visiblePointCount() {
@@ -73,6 +98,47 @@ export default class EmbeddingMapViewer extends Component {
       map.set(c.id, c.color ? `#${c.color}` : "#888888");
     }
     return map;
+  }
+
+  get clusterColorFor() {
+    return (idx) => {
+      if (idx === null || idx === undefined || idx < 0) {
+        return NOISE_COLOR;
+      }
+      return CLUSTER_PALETTE[idx % CLUSTER_PALETTE.length];
+    };
+  }
+
+  get isClusterView() {
+    return this.viewMode === "clusters";
+  }
+
+  get isCategoryView() {
+    return this.viewMode === "category";
+  }
+
+  // Clusters above this size get a label drawn on the canvas. Smaller clusters
+  // stay colored but unlabeled to keep the overlay readable.
+  get labeledClusters() {
+    return this.clusters.filter((c) => c.size >= 20);
+  }
+
+  get legendEntries() {
+    if (this.isClusterView) {
+      return this.clusters.map((c) => ({
+        id: `cluster-${c.idx}`,
+        color: this.clusterColorFor(c.idx).slice(1),
+        name:
+          c.label || c.keywords?.slice(0, 3).join(", ") || `Cluster ${c.idx}`,
+        size: c.size,
+      }));
+    }
+    return this.categories.map((c) => ({
+      id: `category-${c.id}`,
+      color: c.color || "888",
+      name: c.name,
+      size: null,
+    }));
   }
 
   @action
@@ -161,7 +227,6 @@ export default class EmbeddingMapViewer extends Component {
     this.canvas.style.height = `${cssH}px`;
     this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-    // Reset the view to fit all points with a 5% margin.
     const pad = 0.05;
     const xRange = (this.maxX - this.minX) * (1 + 2 * pad) || 1;
     const yRange = (this.maxY - this.minY) * (1 + 2 * pad) || 1;
@@ -170,6 +235,13 @@ export default class EmbeddingMapViewer extends Component {
     const worldMidY = (this.minY + this.maxY) / 2;
     this.offsetX = cssW / 2 - worldMidX * this.scale;
     this.offsetY = cssH / 2 - worldMidY * this.scale;
+  }
+
+  colorForPoint(p) {
+    if (this.isClusterView) {
+      return this.clusterColorFor(p[CLUSTER_IDX]);
+    }
+    return this.categoryColorMap.get(p[CATEGORY_ID]) ?? "#888888";
   }
 
   draw() {
@@ -184,15 +256,15 @@ export default class EmbeddingMapViewer extends Component {
     ctx.clearRect(0, 0, cssW, cssH);
 
     const { points } = this;
-    const colorMap = this.categoryColorMap;
     const size = POINT_SIZE;
     const half = size / 2;
 
-    // Group by color to minimize fillStyle changes (expensive on canvas 2D).
+    // Bucket by color to minimize fillStyle changes. In cluster view this also
+    // naturally lets us draw noise first (underneath the real clusters).
     const buckets = new Map();
     for (let i = 0; i < points.length; i++) {
       const p = points[i];
-      const color = colorMap.get(p[CATEGORY_ID]) ?? "#888888";
+      const color = this.colorForPoint(p);
       let list = buckets.get(color);
       if (!list) {
         list = [];
@@ -201,8 +273,19 @@ export default class EmbeddingMapViewer extends Component {
       list.push(p);
     }
 
-    ctx.globalAlpha = 0.85;
-    for (const [color, list] of buckets) {
+    // Draw noise first so it doesn't sit on top of real clusters.
+    const noiseFirst = [...buckets].sort(([a], [b]) => {
+      if (a === NOISE_COLOR) {
+        return -1;
+      }
+      if (b === NOISE_COLOR) {
+        return 1;
+      }
+      return 0;
+    });
+
+    for (const [color, list] of noiseFirst) {
+      ctx.globalAlpha = color === NOISE_COLOR ? 0.35 : 0.85;
       ctx.fillStyle = color;
       for (const p of list) {
         const sx = p[X] * this.scale + this.offsetX;
@@ -211,6 +294,39 @@ export default class EmbeddingMapViewer extends Component {
       }
     }
     ctx.globalAlpha = 1;
+
+    if (this.isClusterView) {
+      this.drawClusterLabels();
+    }
+  }
+
+  drawClusterLabels() {
+    const ctx = this.ctx;
+    ctx.font = "12px -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+
+    for (const c of this.labeledClusters) {
+      const sx = c.cx * this.scale + this.offsetX;
+      const sy = c.cy * this.scale + this.offsetY;
+      const text = c.label || c.keywords?.slice(0, 2).join(", ");
+      if (!text) {
+        continue;
+      }
+
+      const metrics = ctx.measureText(text);
+      const padX = 6;
+      const w = metrics.width + padX * 2;
+      const h = 18;
+
+      ctx.fillStyle = "rgba(255, 255, 255, 0.85)";
+      ctx.fillRect(sx - w / 2, sy - h / 2, w, h);
+      ctx.strokeStyle = "rgba(0, 0, 0, 0.15)";
+      ctx.strokeRect(sx - w / 2, sy - h / 2, w, h);
+
+      ctx.fillStyle = "#333";
+      ctx.fillText(text, sx, sy + 1);
+    }
   }
 
   screenToWorld(sx, sy) {
@@ -333,7 +449,6 @@ export default class EmbeddingMapViewer extends Component {
   onWheel(e) {
     e.preventDefault();
     const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
-    // Zoom around the cursor: keep the world point under the pointer fixed.
     const world = this.screenToWorld(e.offsetX, e.offsetY);
     this.scale *= factor;
     this.offsetX = e.offsetX - world.x * this.scale;
@@ -360,6 +475,18 @@ export default class EmbeddingMapViewer extends Component {
     this.draw();
   }
 
+  @action
+  showCategoryView() {
+    this.viewMode = "category";
+    this.draw();
+  }
+
+  @action
+  showClusterView() {
+    this.viewMode = "clusters";
+    this.draw();
+  }
+
   <template>
     <div class="embedding-map">
       <div class="embedding-map__header">
@@ -368,6 +495,24 @@ export default class EmbeddingMapViewer extends Component {
           {{i18n "embedding_map.description"}}
         </p>
         <div class="embedding-map__controls">
+          <div class="embedding-map__tabs">
+            <button
+              type="button"
+              class="embedding-map__tab
+                {{if this.isCategoryView 'embedding-map__tab--active'}}"
+              {{on "click" this.showCategoryView}}
+            >
+              {{i18n "embedding_map.tab_category"}}
+            </button>
+            <button
+              type="button"
+              class="embedding-map__tab
+                {{if this.isClusterView 'embedding-map__tab--active'}}"
+              {{on "click" this.showClusterView}}
+            >
+              {{i18n "embedding_map.tab_clusters"}}
+            </button>
+          </div>
           <input
             type="search"
             class="embedding-map__search"
@@ -412,15 +557,24 @@ export default class EmbeddingMapViewer extends Component {
       </div>
 
       <aside class="embedding-map__legend">
-        <h3>{{i18n "embedding_map.legend_title"}}</h3>
+        <h3>
+          {{if
+            this.isClusterView
+            (i18n "embedding_map.legend_clusters")
+            (i18n "embedding_map.legend_categories")
+          }}
+        </h3>
         <ul>
-          {{#each this.categories as |cat|}}
+          {{#each this.legendEntries as |entry|}}
             <li>
               <span
                 class="embedding-map__swatch"
-                style={{this.swatchStyle cat.color}}
+                style={{this.swatchStyle entry.color}}
               ></span>
-              {{cat.name}}
+              <span class="embedding-map__legend-name">{{entry.name}}</span>
+              {{#if entry.size}}
+                <span class="embedding-map__legend-size">{{entry.size}}</span>
+              {{/if}}
             </li>
           {{/each}}
         </ul>

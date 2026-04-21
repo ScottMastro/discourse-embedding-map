@@ -20,8 +20,10 @@ bundle exec rake embedding_map:compute
 ```
 
 Re-run whenever you want the map refreshed against the latest embeddings. The
-task reads the active embedding model from `ai_embeddings_selected_model` and
-writes to `ai_topic_projections`.
+task reads the active embedding model from `ai_embeddings_selected_model`,
+writes 2D coordinates to `ai_topic_projections`, and writes HDBSCAN cluster
+assignments + c-TF-IDF keywords to `ai_topic_clusters`. Set
+`EMBEDDING_MAP_SKIP_CLUSTERING=1` to skip the clustering pass.
 
 ## Settings
 

@@ -8,28 +8,37 @@ module EmbeddingMap
 
     def index
       rows = DB.query(<<~SQL, category_ids: visible_category_ids)
-        SELECT p.topic_id, p.x, p.y, t.category_id,
-               EXTRACT(EPOCH FROM t.created_at)::bigint AS created_at,
-               t.slug, t.title
-        FROM ai_topic_projections p
-        JOIN topics t ON t.id = p.topic_id
-        WHERE t.deleted_at IS NULL
-          AND t.archetype = 'regular'
-          AND t.visible = TRUE
-          AND t.category_id IN (:category_ids)
-      SQL
+          SELECT p.topic_id, p.x, p.y, p.cluster_idx, t.category_id,
+                 EXTRACT(EPOCH FROM t.created_at)::bigint AS created_at,
+                 t.slug, t.title
+          FROM ai_topic_projections p
+          JOIN topics t ON t.id = p.topic_id
+          WHERE t.deleted_at IS NULL
+            AND t.archetype = 'regular'
+            AND t.visible = TRUE
+            AND t.category_id IN (:category_ids)
+        SQL
 
       # Compact array-of-arrays payload keeps ~33k points near 1MB gzipped.
-      # Titles included for the hover tooltip; slug lets the client build
-      # the topic URL without a second round-trip.
+      # Index 7 is cluster_idx (integer ≥ 0 or null for noise / pre-cluster).
       points =
         rows.map do |r|
-          [r.topic_id, r.x.round(3), r.y.round(3), r.category_id, r.created_at, r.slug, r.title]
+          [
+            r.topic_id,
+            r.x.round(3),
+            r.y.round(3),
+            r.category_id,
+            r.created_at,
+            r.slug,
+            r.title,
+            r.cluster_idx,
+          ]
         end
 
       render json: {
                points: points,
                categories: categories_payload,
+               clusters: clusters_payload(rows),
                computed_at: computed_at_epoch,
              }
     end
@@ -56,6 +65,33 @@ module EmbeddingMap
         .where(id: visible_category_ids)
         .pluck(:id, :name, :color, :slug)
         .map { |id, name, color, slug| { id: id, name: name, color: color, slug: slug } }
+    end
+
+    def clusters_payload(rows)
+      # Only include clusters that still have ≥1 topic after Guardian filtering —
+      # otherwise the legend would advertise clusters the user can't see.
+      visible_cluster_sizes = Hash.new(0)
+      rows.each { |r| visible_cluster_sizes[r.cluster_idx] += 1 if r.cluster_idx }
+      return [] if visible_cluster_sizes.empty?
+
+      DB
+        .query(<<~SQL, cluster_idxs: visible_cluster_sizes.keys)
+          SELECT cluster_idx, size, centroid_x, centroid_y, keywords, label_llm
+          FROM ai_topic_clusters
+          WHERE cluster_idx IN (:cluster_idxs)
+          ORDER BY size DESC
+        SQL
+        .map do |c|
+          keywords = c.keywords.is_a?(String) ? JSON.parse(c.keywords) : c.keywords
+          {
+            idx: c.cluster_idx,
+            size: visible_cluster_sizes[c.cluster_idx],
+            cx: c.centroid_x.round(3),
+            cy: c.centroid_y.round(3),
+            keywords: keywords,
+            label: c.label_llm,
+          }
+        end
     end
 
     def computed_at_epoch
