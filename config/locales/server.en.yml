@@ -6,3 +6,4 @@ en:
     embedding_map_umap_min_dist: "UMAP min_dist parameter. Lower values yield tighter, more defined clusters."
     embedding_map_max_points: "Maximum number of topics projected. The most recent topics are selected when the forum exceeds this limit."
     embedding_map_min_cluster_size: "HDBSCAN minimum cluster size. Lower values produce more, smaller clusters; higher values produce fewer, larger clusters."
+    embedding_map_min_supercluster_size: "HDBSCAN minimum cluster size for the second supercluster pass. Much larger than the cluster setting; produces a handful of broad topical regions."

@@ -24,6 +24,7 @@ namespace :embedding_map do
       "EMBEDDING_MAP_N_NEIGHBORS" => SiteSetting.embedding_map_umap_n_neighbors.to_s,
       "EMBEDDING_MAP_MIN_DIST" => SiteSetting.embedding_map_umap_min_dist.to_s,
       "EMBEDDING_MAP_MIN_CLUSTER_SIZE" => SiteSetting.embedding_map_min_cluster_size.to_s,
+      "EMBEDDING_MAP_MIN_SUPERCLUSTER_SIZE" => SiteSetting.embedding_map_min_supercluster_size.to_s,
     }
 
     script = File.expand_path("../python/project_embeddings.py", __dir__)

@@ -18,6 +18,7 @@ const CREATED_AT = 4;
 const SLUG = 5;
 const TITLE = 6;
 const CLUSTER_IDX = 7;
+const SUPERCLUSTER_IDX = 8;
 
 const POINT_SIZE = 3;
 const HOVER_RADIUS_PX = 6;
@@ -118,6 +119,26 @@ export default class EmbeddingMapViewer extends Component {
     return this.args.data?.clusters ?? [];
   }
 
+  get superclusters() {
+    return this.args.data?.superclusters ?? [];
+  }
+
+  // Groups and point-idx accessor swap based on viewMode so one pipeline of
+  // color/label/trending/legend logic drives both cluster and supercluster
+  // views.
+  get activeGroups() {
+    if (this.isSuperclusterView) {
+      return this.superclusters;
+    }
+    return this.clusters;
+  }
+
+  activeGroupIdxFor(point) {
+    return this.isSuperclusterView
+      ? point[SUPERCLUSTER_IDX]
+      : point[CLUSTER_IDX];
+  }
+
   get visiblePointCount() {
     return this.points.length;
   }
@@ -143,6 +164,14 @@ export default class EmbeddingMapViewer extends Component {
     return this.viewMode === "clusters";
   }
 
+  get isSuperclusterView() {
+    return this.viewMode === "superclusters";
+  }
+
+  get isGroupView() {
+    return this.isClusterView || this.isSuperclusterView;
+  }
+
   get isCategoryView() {
     return this.viewMode === "category";
   }
@@ -159,7 +188,7 @@ export default class EmbeddingMapViewer extends Component {
 
   get labeledClusters() {
     const threshold = this.minLabelSize();
-    return this.clusters.filter((c) => c.size >= threshold);
+    return this.activeGroups.filter((c) => c.size >= threshold);
   }
 
   // Share-of-voice "weight" per cluster at the current playhead.
@@ -169,7 +198,7 @@ export default class EmbeddingMapViewer extends Component {
   // relative to its historical share — i.e. trending hot. We require a
   // minimum recent count so a brand-new cluster of 3 topics doesn't dominate.
   get trendingClusters() {
-    if (this.playhead === null || !this.isClusterView) {
+    if (this.playhead === null || !this.isGroupView) {
       return [];
     }
     const playhead = this.playhead;
@@ -185,7 +214,7 @@ export default class EmbeddingMapViewer extends Component {
       if (t > playhead) {
         continue;
       }
-      const idx = p[CLUSTER_IDX];
+      const idx = this.activeGroupIdxFor(p);
       if (idx === null || idx === undefined || idx < 0) {
         continue;
       }
@@ -217,7 +246,7 @@ export default class EmbeddingMapViewer extends Component {
     scored.sort((a, b) => b.weight - a.weight);
     const top = scored.slice(0, TRENDING_TOP_N);
 
-    const clustersByIdx = new Map(this.clusters.map((c) => [c.idx, c]));
+    const clustersByIdx = new Map(this.activeGroups.map((c) => [c.idx, c]));
     return top.map((s) => {
       const c = clustersByIdx.get(s.idx) || {};
       return {
@@ -267,13 +296,23 @@ export default class EmbeddingMapViewer extends Component {
   }
 
   get isTrendingActive() {
-    return this.playhead !== null && this.isClusterView;
+    return this.playhead !== null && this.isGroupView;
+  }
+
+  get legendTitle() {
+    if (this.isSuperclusterView) {
+      return i18n("embedding_map.legend_superclusters");
+    }
+    if (this.isClusterView) {
+      return i18n("embedding_map.legend_clusters");
+    }
+    return i18n("embedding_map.legend_categories");
   }
 
   get legendEntries() {
-    if (this.isClusterView) {
-      return this.clusters.map((c) => ({
-        id: `cluster-${c.idx}`,
+    if (this.isGroupView) {
+      return this.activeGroups.map((c) => ({
+        id: `group-${c.idx}`,
         color: this.clusterColorFor(c.idx).slice(1),
         name:
           c.label || c.keywords?.slice(0, 3).join(", ") || `Cluster ${c.idx}`,
@@ -411,8 +450,8 @@ export default class EmbeddingMapViewer extends Component {
   }
 
   colorForPoint(p) {
-    if (this.isClusterView) {
-      return this.clusterColorFor(p[CLUSTER_IDX]);
+    if (this.isGroupView) {
+      return this.clusterColorFor(this.activeGroupIdxFor(p));
     }
     return this.categoryColorMap.get(p[CATEGORY_ID]) ?? "#888888";
   }
@@ -539,7 +578,7 @@ export default class EmbeddingMapViewer extends Component {
       ctx.lineWidth = 1;
     }
 
-    if (this.isClusterView) {
+    if (this.isGroupView) {
       this.drawClusterLabels();
     }
   }
@@ -549,7 +588,7 @@ export default class EmbeddingMapViewer extends Component {
     const hoveredIdx = this.hoveredClusterIdx;
     const hoveredCluster =
       hoveredIdx !== null && hoveredIdx !== undefined
-        ? this.clusters.find((c) => c.idx === hoveredIdx)
+        ? this.activeGroups.find((c) => c.idx === hoveredIdx)
         : null;
 
     // Largest clusters get placement priority — we add them first and skip any
@@ -710,17 +749,17 @@ export default class EmbeddingMapViewer extends Component {
     if (idx >= 0) {
       const p = this.points[idx];
       this.hoveredTitle = p[TITLE];
-      this.hoveredClusterIdx = p[CLUSTER_IDX];
+      this.hoveredClusterIdx = this.activeGroupIdxFor(p);
       this.hoverX = e.offsetX;
       this.hoverY = e.offsetY;
     } else {
       this.hoveredTitle = null;
       this.hoveredClusterIdx = null;
     }
-    // Only redraw the canvas when the cluster under the cursor changes —
-    // pointer moves within a single cluster happen constantly and don't
+    // Only redraw the canvas when the group under the cursor changes —
+    // pointer moves within a single group happen constantly and don't
     // affect what's drawn.
-    if (this.isClusterView && prevClusterIdx !== this.hoveredClusterIdx) {
+    if (this.isGroupView && prevClusterIdx !== this.hoveredClusterIdx) {
       this.draw();
     }
   }
@@ -750,7 +789,7 @@ export default class EmbeddingMapViewer extends Component {
     this.hoveredTitle = null;
     this.hoveredClusterIdx = null;
     this.dragging = false;
-    if (this.isClusterView) {
+    if (this.isGroupView) {
       this.draw();
     }
   }
@@ -794,6 +833,12 @@ export default class EmbeddingMapViewer extends Component {
   @action
   showClusterView() {
     this.viewMode = "clusters";
+    this.draw();
+  }
+
+  @action
+  showSuperclusterView() {
+    this.viewMode = "superclusters";
     this.draw();
   }
 
@@ -918,6 +963,14 @@ export default class EmbeddingMapViewer extends Component {
             >
               {{i18n "embedding_map.tab_clusters"}}
             </button>
+            <button
+              type="button"
+              class="embedding-map__tab
+                {{if this.isSuperclusterView 'embedding-map__tab--active'}}"
+              {{on "click" this.showSuperclusterView}}
+            >
+              {{i18n "embedding_map.tab_superclusters"}}
+            </button>
           </div>
           <input
             type="search"
@@ -1023,11 +1076,7 @@ export default class EmbeddingMapViewer extends Component {
           </div>
         {{else}}
           <h3>
-            {{if
-              this.isClusterView
-              (i18n "embedding_map.legend_clusters")
-              (i18n "embedding_map.legend_categories")
-            }}
+            {{this.legendTitle}}
           </h3>
           <ul>
             {{#each this.legendEntries as |entry|}}

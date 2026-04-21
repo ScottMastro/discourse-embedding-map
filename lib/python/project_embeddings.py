@@ -141,22 +141,28 @@ def extract_keywords(labels, titles, top_k=5):
     return keywords
 
 
-def write_projections(conn, model_id, topic_ids, coords, cluster_labels):
-    """cluster_labels can be None (skipped) or an ndarray aligned with topic_ids."""
+def _idx_or_none(labels, i):
+    if labels is None:
+        return None
+    raw = int(labels[i])
+    return None if raw < 0 else raw
+
+
+def write_projections(
+    conn, model_id, topic_ids, coords, cluster_labels, supercluster_labels
+):
+    """Write one row per topic with cluster_idx + supercluster_idx. Either
+    label array may be None (when that pass was skipped)."""
     rows = []
     for i in range(len(topic_ids)):
-        if cluster_labels is None:
-            cluster_idx = None
-        else:
-            raw = int(cluster_labels[i])
-            cluster_idx = None if raw < 0 else raw
         rows.append(
             (
                 int(topic_ids[i]),
                 float(coords[i, 0]),
                 float(coords[i, 1]),
                 model_id,
-                cluster_idx,
+                _idx_or_none(cluster_labels, i),
+                _idx_or_none(supercluster_labels, i),
             )
         )
 
@@ -165,13 +171,15 @@ def write_projections(conn, model_id, topic_ids, coords, cluster_labels):
         cur.executemany(
             """
             INSERT INTO ai_topic_projections
-              (topic_id, x, y, model_id, cluster_idx, method, computed_at)
-            VALUES (%s, %s, %s, %s, %s, 'umap', NOW())
+              (topic_id, x, y, model_id, cluster_idx, supercluster_idx,
+               method, computed_at)
+            VALUES (%s, %s, %s, %s, %s, %s, 'umap', NOW())
             ON CONFLICT (topic_id) DO UPDATE
               SET x = EXCLUDED.x,
                   y = EXCLUDED.y,
                   model_id = EXCLUDED.model_id,
                   cluster_idx = EXCLUDED.cluster_idx,
+                  supercluster_idx = EXCLUDED.supercluster_idx,
                   computed_at = EXCLUDED.computed_at
             """,
             rows,
@@ -179,7 +187,9 @@ def write_projections(conn, model_id, topic_ids, coords, cluster_labels):
     conn.commit()
 
 
-def write_clusters(conn, model_id, cluster_labels, coords_2d, keywords):
+def write_cluster_table(
+    conn, table, model_id, cluster_labels, coords_2d, keywords
+):
     if cluster_labels is None:
         return
 
@@ -203,17 +213,18 @@ def write_clusters(conn, model_id, cluster_labels, coords_2d, keywords):
         )
 
     with conn.cursor() as cur:
-        cur.execute("DELETE FROM ai_topic_clusters WHERE model_id = %s", (model_id,))
+        cur.execute(f"DELETE FROM {table} WHERE model_id = %s", (model_id,))
         cur.executemany(
-            """
-            INSERT INTO ai_topic_clusters
-              (model_id, cluster_idx, size, centroid_x, centroid_y, keywords, method, computed_at)
+            f"""
+            INSERT INTO {table}
+              (model_id, cluster_idx, size, centroid_x, centroid_y, keywords,
+               method, computed_at)
             VALUES (%s, %s, %s, %s, %s, %s::jsonb, 'hdbscan', NOW())
             """,
             rows,
         )
     conn.commit()
-    log(f"wrote {len(rows)} clusters")
+    log(f"wrote {len(rows)} rows to {table}")
 
 
 def main():
@@ -223,6 +234,9 @@ def main():
     n_neighbors = int(os.environ.get("EMBEDDING_MAP_N_NEIGHBORS", "15"))
     min_dist = float(os.environ.get("EMBEDDING_MAP_MIN_DIST", "0.1"))
     min_cluster_size = int(os.environ.get("EMBEDDING_MAP_MIN_CLUSTER_SIZE", "25"))
+    min_supercluster_size = int(
+        os.environ.get("EMBEDDING_MAP_MIN_SUPERCLUSTER_SIZE", "300")
+    )
 
     with psycopg.connect(dsn) as conn:
         log(f"loading embeddings (model_id={model_id}, max={max_points})")
@@ -237,18 +251,46 @@ def main():
         coords_2d = run_umap(vectors, 2, n_neighbors, min_dist, "viz")
 
         cluster_labels = None
-        keywords = {}
+        supercluster_labels = None
+        cluster_keywords = {}
+        supercluster_keywords = {}
         if not SKIP_CLUSTERING:
             coords_5d = run_umap(vectors, 5, n_neighbors, min_dist, "cluster")
             cluster_labels = run_hdbscan(coords_5d, min_cluster_size)
-            log("extracting keywords (c-TF-IDF)")
-            keywords = extract_keywords(cluster_labels, titles)
+            log("extracting keywords for clusters (c-TF-IDF)")
+            cluster_keywords = extract_keywords(cluster_labels, titles)
+
+            supercluster_labels = run_hdbscan(coords_5d, min_supercluster_size)
+            log("extracting keywords for superclusters (c-TF-IDF)")
+            supercluster_keywords = extract_keywords(supercluster_labels, titles)
 
         log("writing projections to DB")
-        write_projections(conn, model_id, topic_ids, coords_2d, cluster_labels)
+        write_projections(
+            conn,
+            model_id,
+            topic_ids,
+            coords_2d,
+            cluster_labels,
+            supercluster_labels,
+        )
         log(f"wrote {len(topic_ids)} projection rows")
 
-        write_clusters(conn, model_id, cluster_labels, coords_2d, keywords)
+        write_cluster_table(
+            conn,
+            "ai_topic_clusters",
+            model_id,
+            cluster_labels,
+            coords_2d,
+            cluster_keywords,
+        )
+        write_cluster_table(
+            conn,
+            "ai_topic_superclusters",
+            model_id,
+            supercluster_labels,
+            coords_2d,
+            supercluster_keywords,
+        )
 
 
 if __name__ == "__main__":

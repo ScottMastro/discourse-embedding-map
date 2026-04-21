@@ -22,3 +22,7 @@ embedding_map:
     default: 25
     min: 5
     max: 500
+  embedding_map_min_supercluster_size:
+    default: 300
+    min: 50
+    max: 5000
