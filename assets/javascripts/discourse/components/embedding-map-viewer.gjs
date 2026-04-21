@@ -69,6 +69,7 @@ export default class EmbeddingMapViewer extends Component {
   scale = 1;
   offsetX = 0;
   offsetY = 0;
+  initialScale = 1;
 
   dragging = false;
   lastPointerX = 0;
@@ -118,10 +119,19 @@ export default class EmbeddingMapViewer extends Component {
     return this.viewMode === "category";
   }
 
-  // Clusters above this size get a label drawn on the canvas. Smaller clusters
-  // stay colored but unlabeled to keep the overlay readable.
+  // Zoom-aware minimum cluster size for drawing a label. At the fit-to-screen
+  // zoom we want only the top ~15 clusters labeled; as the user zooms in, the
+  // threshold drops quadratically with the ratio of scales, so 2× zoom shows
+  // ~4× more labels. Collision avoidance in drawClusterLabels prunes further.
+  minLabelSize() {
+    const ratio = (this.initialScale || 1) / (this.scale || 1);
+    const base = 100;
+    return Math.max(10, Math.round(base * ratio * ratio));
+  }
+
   get labeledClusters() {
-    return this.clusters.filter((c) => c.size >= 20);
+    const threshold = this.minLabelSize();
+    return this.clusters.filter((c) => c.size >= threshold);
   }
 
   get legendEntries() {
@@ -232,6 +242,7 @@ export default class EmbeddingMapViewer extends Component {
     const xRange = (this.maxX - this.minX) * (1 + 2 * pad) || 1;
     const yRange = (this.maxY - this.minY) * (1 + 2 * pad) || 1;
     this.scale = Math.min(cssW / xRange, cssH / yRange);
+    this.initialScale = this.scale;
     const worldMidX = (this.minX + this.maxX) / 2;
     const worldMidY = (this.minY + this.maxY) / 2;
     this.offsetX = cssW / 2 - worldMidX * this.scale;
@@ -304,27 +315,52 @@ export default class EmbeddingMapViewer extends Component {
   drawClusterLabels() {
     const ctx = this.ctx;
     const hoveredIdx = this.hoveredClusterIdx;
-
-    // The hovered cluster may be unlabeled (size < 20) but we still want to
-    // call it out, so merge it into the draw set and render it last so it
-    // paints on top of any neighbors.
-    const toDraw = [...this.labeledClusters];
     const hoveredCluster =
       hoveredIdx !== null && hoveredIdx !== undefined
         ? this.clusters.find((c) => c.idx === hoveredIdx)
         : null;
-    if (hoveredCluster && !toDraw.includes(hoveredCluster)) {
-      toDraw.push(hoveredCluster);
-    }
-    if (hoveredCluster) {
-      const i = toDraw.indexOf(hoveredCluster);
-      if (i >= 0 && i !== toDraw.length - 1) {
-        toDraw.splice(i, 1);
-        toDraw.push(hoveredCluster);
+
+    // Largest clusters get placement priority — we add them first and skip any
+    // later label whose box would overlap one already placed. The hovered
+    // cluster, if any, is reserved and always placed last on top.
+    const candidates = [...this.labeledClusters].sort(
+      (a, b) => b.size - a.size
+    );
+
+    const placed = [];
+    const boxes = [];
+
+    const intersects = (a, b) =>
+      a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+
+    // Pre-measure to decide which labels survive collision pruning.
+    ctx.font = "12px -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
+    for (const c of candidates) {
+      if (c === hoveredCluster) {
+        continue;
       }
+      const text = c.label || c.keywords?.slice(0, 2).join(", ");
+      if (!text) {
+        continue;
+      }
+      const sx = c.cx * this.scale + this.offsetX;
+      const sy = c.cy * this.scale + this.offsetY;
+      const m = ctx.measureText(text);
+      const w = m.width + 12;
+      const h = 18;
+      const box = { x: sx - w / 2, y: sy - h / 2, w, h };
+      if (boxes.some((b) => intersects(b, box))) {
+        continue;
+      }
+      boxes.push(box);
+      placed.push(c);
     }
 
-    for (const c of toDraw) {
+    if (hoveredCluster) {
+      placed.push(hoveredCluster);
+    }
+
+    for (const c of placed) {
       const isHovered = hoveredCluster === c;
       const sx = c.cx * this.scale + this.offsetX;
       const sy = c.cy * this.scale + this.offsetY;
