@@ -6,8 +6,11 @@ import didInsert from "@ember/render-modifiers/modifiers/did-insert";
 import willDestroy from "@ember/render-modifiers/modifiers/will-destroy";
 import { service } from "@ember/service";
 import { trustHTML } from "@ember/template";
-import createScatterplot from "regl-scatterplot";
+import loadScript from "discourse/lib/load-script";
 import { i18n } from "discourse-i18n";
+
+const SCATTERPLOT_SCRIPT =
+  "/plugins/discourse-embedding-map/javascripts/regl-scatterplot.bundle.js";
 
 // Index format (matches controller serialization):
 //   [topic_id, x, y, category_id, created_at_epoch, slug, title]
@@ -59,6 +62,9 @@ export default class EmbeddingMapViewer extends Component {
     if (!points.length) {
       return;
     }
+
+    await loadScript(SCATTERPLOT_SCRIPT);
+    const createScatterplot = window.ReglScatterplot.default;
 
     const categoryColors = categories.map((c) =>
       c.color ? `#${c.color}` : "#888888"

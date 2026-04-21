@@ -5,6 +5,19 @@ the Discourse AI embeddings pipeline into `(x, y)` coordinates and renders them
 in a WebGL scatterplot at `/topic-map`. Hover for titles, click to open the
 topic, colors by category.
 
+## Rebuilding the scatterplot bundle
+
+The WebGL library `regl-scatterplot` is pre-bundled into
+`public/javascripts/regl-scatterplot.bundle.js` (committed to the repo) so
+Discourse's plugin build doesn't need to resolve npm deps. To rebuild after
+upgrading:
+
+```
+cd plugins/discourse-embedding-map
+npm install
+npm run build
+```
+
 ## Setup
 
 Requires Python 3 on the host with:
