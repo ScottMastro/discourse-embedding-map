@@ -71,14 +71,20 @@ export default class EmbeddingMapViewer extends Component {
     );
     categories.forEach((c, i) => this.categoryIndexMap.set(c.id, i));
 
-    const { width, height } = this.canvas.getBoundingClientRect();
+    // Size from wrapper, not the canvas itself — the canvas is CSS-sized
+    // but until regl-scatterplot sees explicit width/height it can render
+    // at its default 300×150 and the points end up off-screen.
+    const wrapper = this.canvas.parentElement;
+    const rect = wrapper.getBoundingClientRect();
+    const width = rect.width || 800;
+    const height = rect.height || 600;
 
     this.scatterplot = createScatterplot({
       canvas: this.canvas,
       width,
       height,
-      pointSize: 3,
-      opacity: 0.7,
+      pointSize: 4,
+      opacity: 0.85,
       lassoOnLongPress: true,
     });
 
@@ -98,25 +104,27 @@ export default class EmbeddingMapViewer extends Component {
     this.scatterplot.set({ colorBy: "valueA", pointColor: categoryColors });
     await this.scatterplot.draw(data);
 
-    this.scatterplot.subscribe("pointOver", (pointIdx) => {
+    this.scatterplot.subscribe("pointover", (pointIdx) => {
       const p = points[pointIdx];
       this.hoveredTitle = p?.[TITLE] ?? null;
     });
-    this.scatterplot.subscribe("pointOut", () => {
+    this.scatterplot.subscribe("pointout", () => {
       this.hoveredTitle = null;
     });
-    this.scatterplot.subscribe("pointClick", (pointIdx) => {
-      const p = points[pointIdx];
+    this.scatterplot.subscribe("select", ({ points: selected }) => {
+      const p = points[selected?.[0]];
       if (p) {
         this.router.transitionTo(`/t/${p[SLUG]}/${p[TOPIC_ID]}`);
       }
     });
 
     this.resizeObserver = new ResizeObserver(() => {
-      const r = this.canvas.getBoundingClientRect();
-      this.scatterplot?.set({ width: r.width, height: r.height });
+      const r = wrapper.getBoundingClientRect();
+      if (r.width > 0 && r.height > 0) {
+        this.scatterplot?.set({ width: r.width, height: r.height });
+      }
     });
-    this.resizeObserver.observe(this.canvas.parentElement);
+    this.resizeObserver.observe(wrapper);
   }
 
   bounds(points) {
