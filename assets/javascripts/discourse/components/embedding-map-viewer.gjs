@@ -27,6 +27,9 @@ const GRID_CELLS = 128;
 const PLAYBACK_SECONDS_PER_SECOND = 60 * 60 * 24 * 30 * 3;
 // Points created within this window of the playhead pop with a ring.
 const POP_WINDOW_SECONDS = 60 * 60 * 24 * 30 * 3;
+// During playback, points older than this gradually fade to gray.
+const FADE_WINDOW_SECONDS = 60 * 60 * 24 * 365;
+const FADE_COLOR = [170, 170, 170];
 
 // Deterministic palette for cluster view. 20 colors cycled by cluster_idx.
 const CLUSTER_PALETTE = [
@@ -93,6 +96,9 @@ export default class EmbeddingMapViewer extends Component {
   dragMoved = false;
 
   spatialGrid = null;
+
+  // Cache parsed "#rrggbb" → [r,g,b] so we don't re-parse per point.
+  _rgbCache = new Map();
 
   get points() {
     return this.args.data?.points ?? [];
@@ -297,6 +303,31 @@ export default class EmbeddingMapViewer extends Component {
     return this.categoryColorMap.get(p[CATEGORY_ID]) ?? "#888888";
   }
 
+  hexToRgb(hex) {
+    let rgb = this._rgbCache.get(hex);
+    if (rgb) {
+      return rgb;
+    }
+    const h = hex.startsWith("#") ? hex.slice(1) : hex;
+    rgb = [
+      parseInt(h.slice(0, 2), 16),
+      parseInt(h.slice(2, 4), 16),
+      parseInt(h.slice(4, 6), 16),
+    ];
+    this._rgbCache.set(hex, rgb);
+    return rgb;
+  }
+
+  // Mix rgb color toward FADE_COLOR by fraction t ∈ [0, 1] and return #rrggbb.
+  mixToFade(hex, t) {
+    const [r, g, b] = this.hexToRgb(hex);
+    const mix = (a, b2) => Math.round(a + (b2 - a) * t);
+    const r2 = mix(r, FADE_COLOR[0]);
+    const g2 = mix(g, FADE_COLOR[1]);
+    const b2 = mix(b, FADE_COLOR[2]);
+    return `#${r2.toString(16).padStart(2, "0")}${g2.toString(16).padStart(2, "0")}${b2.toString(16).padStart(2, "0")}`;
+  }
+
   draw() {
     if (!this.ctx || !this.canvas) {
       return;
@@ -313,9 +344,12 @@ export default class EmbeddingMapViewer extends Component {
     const half = size / 2;
     const popBoundary =
       playhead !== null ? playhead - POP_WINDOW_SECONDS : null;
+    const FADE_TIERS = 8;
 
     // Bucket by color to minimize fillStyle changes. When the playhead is set,
-    // skip any point created after it so the map fills in over time.
+    // skip any point created after it, and quantize age into fade tiers so
+    // older points drift to gray without producing thousands of unique
+    // fillStyles.
     const buckets = new Map();
     const popping = [];
     for (let i = 0; i < points.length; i++) {
@@ -323,7 +357,16 @@ export default class EmbeddingMapViewer extends Component {
       if (playhead !== null && p[CREATED_AT] > playhead) {
         continue;
       }
-      const color = this.colorForPoint(p);
+      const baseColor = this.colorForPoint(p);
+      let color = baseColor;
+      if (playhead !== null) {
+        const age = playhead - p[CREATED_AT];
+        const rawT = Math.min(1, Math.max(0, age / FADE_WINDOW_SECONDS));
+        const tier = Math.round(rawT * FADE_TIERS) / FADE_TIERS;
+        if (tier > 0) {
+          color = this.mixToFade(baseColor, tier);
+        }
+      }
       let list = buckets.get(color);
       if (!list) {
         list = [];
@@ -331,7 +374,7 @@ export default class EmbeddingMapViewer extends Component {
       }
       list.push(p);
       if (popBoundary !== null && p[CREATED_AT] >= popBoundary) {
-        popping.push([p, color]);
+        popping.push([p, baseColor]);
       }
     }
 
@@ -650,6 +693,16 @@ export default class EmbeddingMapViewer extends Component {
     });
   }
 
+  get bigDateLabel() {
+    if (this.playhead === null) {
+      return null;
+    }
+    return new Date(this.playhead * 1000).toLocaleDateString(undefined, {
+      year: "numeric",
+      month: "long",
+    });
+  }
+
   get timelineMin() {
     return this.minTime;
   }
@@ -793,6 +846,9 @@ export default class EmbeddingMapViewer extends Component {
       </div>
 
       <div class="embedding-map__canvas-wrapper">
+        {{#if this.bigDateLabel}}
+          <div class="embedding-map__big-date">{{this.bigDateLabel}}</div>
+        {{/if}}
         {{! template-lint-disable no-pointer-down-event-binding }}
         <canvas
           class="embedding-map__canvas"
