@@ -1,0 +1,19 @@
+en:
+  js:
+    embedding_map:
+      title: "Topic map"
+      description: "Explore clusters of similar topics across the forum."
+      loading: "Loading topic map…"
+      empty: "The topic map has not been computed yet."
+      not_authorized: "You don't have permission to view the topic map."
+      search_placeholder: "Search topics…"
+      topics_shown:
+        one: "%{count} topic"
+        other: "%{count} topics"
+      legend_title: "Category"
+      reset_view: "Reset view"
+  admin_js:
+    admin:
+      site_settings:
+        categories:
+          embedding_map: "Topic map"

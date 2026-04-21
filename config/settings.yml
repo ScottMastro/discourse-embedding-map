@@ -1,0 +1,20 @@
+embedding_map:
+  embedding_map_enabled:
+    default: false
+    client: true
+  embedding_map_min_trust_level:
+    default: 0
+    min: -1
+    max: 4
+    client: true
+  embedding_map_umap_n_neighbors:
+    default: 15
+    min: 2
+    max: 200
+  embedding_map_umap_min_dist:
+    default: "0.1"
+    type: float
+  embedding_map_max_points:
+    default: 50000
+    min: 1000
+    max: 500000
