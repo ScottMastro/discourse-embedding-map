@@ -1,13 +1,6 @@
 {
   "private": true,
-  "scripts": {
-    "build": "esbuild node_modules/regl-scatterplot/dist/regl-scatterplot.esm.js --bundle --format=iife --global-name=ReglScatterplot --minify --outfile=public/javascripts/regl-scatterplot.bundle.js"
-  },
   "dependencies": {
     "discourse": "npm:@discourse/types@*"
-  },
-  "devDependencies": {
-    "esbuild": "^0.28.0",
-    "regl-scatterplot": "^1.15.0"
   }
 }

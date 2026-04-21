@@ -56,15 +56,17 @@
 
   &__tooltip {
     position: absolute;
-    top: 0.5rem;
-    left: 0.5rem;
     padding: 0.375rem 0.625rem;
     background: var(--secondary);
     border: 1px solid var(--primary-low);
     border-radius: 4px;
     font-size: var(--font-down-1);
     pointer-events: none;
-    max-width: 60%;
+    max-width: 320px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    box-shadow: 0 2px 8px rgb(0, 0, 0, 0.15);
   }
 
   &__legend {
