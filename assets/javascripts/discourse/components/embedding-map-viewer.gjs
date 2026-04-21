@@ -76,6 +76,7 @@ export default class EmbeddingMapViewer extends Component {
   // and latest created_at in the visible point set.
   @tracked playing = false;
   @tracked playhead = null;
+  @tracked playbackMultiplier = 0.5;
   minTime = 0;
   maxTime = 0;
   rafId = null;
@@ -855,7 +856,7 @@ export default class EmbeddingMapViewer extends Component {
       this.lastFrameTs = now;
       const next =
         (this.playhead ?? this.minTime) +
-        dtSeconds * PLAYBACK_SECONDS_PER_SECOND;
+        dtSeconds * PLAYBACK_SECONDS_PER_SECOND * this.playbackMultiplier;
       if (next >= this.maxTime) {
         this.playhead = this.maxTime;
         this.playing = false;
@@ -875,6 +876,11 @@ export default class EmbeddingMapViewer extends Component {
       cancelAnimationFrame(this.rafId);
       this.rafId = null;
     }
+  }
+
+  @action
+  onSpeedChange(e) {
+    this.playbackMultiplier = parseFloat(e.target.value);
   }
 
   @action
@@ -944,6 +950,17 @@ export default class EmbeddingMapViewer extends Component {
               (i18n "embedding_map.play")
             }}
           </button>
+          <select
+            class="embedding-map__speed"
+            aria-label={{i18n "embedding_map.speed"}}
+            {{on "change" this.onSpeedChange}}
+          >
+            <option value="0.25">0.25×</option>
+            <option value="0.5" selected>0.5×</option>
+            <option value="1">1×</option>
+            <option value="2">2×</option>
+            <option value="4">4×</option>
+          </select>
           <input
             type="range"
             class="embedding-map__slider"

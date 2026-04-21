@@ -18,6 +18,7 @@ en:
       play: "▶ Play"
       pause: "⏸ Pause"
       trending_title: "Trending now"
+      speed: "Speed"
   admin_js:
     admin:
       site_settings:
