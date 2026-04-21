@@ -14,6 +14,7 @@ const TOPIC_ID = 0;
 const X = 1;
 const Y = 2;
 const CATEGORY_ID = 3;
+const CREATED_AT = 4;
 const SLUG = 5;
 const TITLE = 6;
 const CLUSTER_IDX = 7;
@@ -21,6 +22,11 @@ const CLUSTER_IDX = 7;
 const POINT_SIZE = 3;
 const HOVER_RADIUS_PX = 6;
 const GRID_CELLS = 128;
+
+// Playback speed: 3 months of forum time per 1 second of real time.
+const PLAYBACK_SECONDS_PER_SECOND = 60 * 60 * 24 * 30 * 3;
+// Points created within this window of the playhead pop with a ring.
+const POP_WINDOW_SECONDS = 60 * 60 * 24 * 30 * 3;
 
 // Deterministic palette for cluster view. 20 colors cycled by cluster_idx.
 const CLUSTER_PALETTE = [
@@ -56,6 +62,16 @@ export default class EmbeddingMapViewer extends Component {
   @tracked hoverX = 0;
   @tracked hoverY = 0;
   @tracked query = "";
+
+  // Playback state. playhead is an epoch timestamp; when null the full
+  // dataset is shown (playback disabled). minTime/maxTime are the earliest
+  // and latest created_at in the visible point set.
+  @tracked playing = false;
+  @tracked playhead = null;
+  minTime = 0;
+  maxTime = 0;
+  rafId = null;
+  lastFrameTs = 0;
 
   canvas = null;
   ctx = null;
@@ -157,6 +173,7 @@ export default class EmbeddingMapViewer extends Component {
     this.canvas = element;
     this.ctx = element.getContext("2d");
     this.fitBounds();
+    this.fitTimeBounds();
     this.buildSpatialGrid();
     this.resizeCanvas();
     this.draw();
@@ -171,6 +188,30 @@ export default class EmbeddingMapViewer extends Component {
   @action
   teardown() {
     this.resizeObserver?.disconnect();
+    if (this.rafId) {
+      cancelAnimationFrame(this.rafId);
+      this.rafId = null;
+    }
+  }
+
+  fitTimeBounds() {
+    const { points } = this;
+    if (!points.length) {
+      return;
+    }
+    let tMin = Infinity;
+    let tMax = -Infinity;
+    for (const p of points) {
+      const t = p[CREATED_AT];
+      if (t < tMin) {
+        tMin = t;
+      }
+      if (t > tMax) {
+        tMax = t;
+      }
+    }
+    this.minTime = tMin;
+    this.maxTime = tMax;
   }
 
   fitBounds() {
@@ -267,15 +308,21 @@ export default class EmbeddingMapViewer extends Component {
 
     ctx.clearRect(0, 0, cssW, cssH);
 
-    const { points } = this;
+    const { points, playhead } = this;
     const size = POINT_SIZE;
     const half = size / 2;
+    const popBoundary =
+      playhead !== null ? playhead - POP_WINDOW_SECONDS : null;
 
-    // Bucket by color to minimize fillStyle changes. In cluster view this also
-    // naturally lets us draw noise first (underneath the real clusters).
+    // Bucket by color to minimize fillStyle changes. When the playhead is set,
+    // skip any point created after it so the map fills in over time.
     const buckets = new Map();
+    const popping = [];
     for (let i = 0; i < points.length; i++) {
       const p = points[i];
+      if (playhead !== null && p[CREATED_AT] > playhead) {
+        continue;
+      }
       const color = this.colorForPoint(p);
       let list = buckets.get(color);
       if (!list) {
@@ -283,6 +330,9 @@ export default class EmbeddingMapViewer extends Component {
         buckets.set(color, list);
       }
       list.push(p);
+      if (popBoundary !== null && p[CREATED_AT] >= popBoundary) {
+        popping.push([p, color]);
+      }
     }
 
     // Draw noise first so it doesn't sit on top of real clusters.
@@ -306,6 +356,31 @@ export default class EmbeddingMapViewer extends Component {
       }
     }
     ctx.globalAlpha = 1;
+
+    // Draw a fading ring around recently-born points so the "play" effect
+    // feels alive — a point that appeared in the last 3 months pops, fading
+    // linearly out to an ordinary dot.
+    if (popping.length > 0 && playhead !== null) {
+      const window = POP_WINDOW_SECONDS || 1;
+      for (const [p, color] of popping) {
+        const age = Math.max(0, playhead - p[CREATED_AT]);
+        const strength = Math.max(0, 1 - age / window);
+        if (strength <= 0.01) {
+          continue;
+        }
+        const sx = p[X] * this.scale + this.offsetX;
+        const sy = p[Y] * this.scale + this.offsetY;
+        const ringR = 2 + 8 * strength;
+        ctx.globalAlpha = strength * 0.6;
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.arc(sx, sy, ringR, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+      ctx.globalAlpha = 1;
+      ctx.lineWidth = 1;
+    }
 
     if (this.isClusterView) {
       this.drawClusterLabels();
@@ -565,6 +640,87 @@ export default class EmbeddingMapViewer extends Component {
     this.draw();
   }
 
+  get playheadLabel() {
+    if (this.playhead === null) {
+      return "";
+    }
+    return new Date(this.playhead * 1000).toLocaleDateString(undefined, {
+      year: "numeric",
+      month: "short",
+    });
+  }
+
+  get timelineMin() {
+    return this.minTime;
+  }
+
+  get timelineMax() {
+    return this.maxTime;
+  }
+
+  get timelineValue() {
+    return this.playhead ?? this.maxTime;
+  }
+
+  @action
+  togglePlay() {
+    if (this.playing) {
+      this.pause();
+    } else {
+      this.play();
+    }
+  }
+
+  play() {
+    if (this.maxTime <= this.minTime) {
+      return;
+    }
+    // Rewind if we're already at or past the end.
+    if (this.playhead === null || this.playhead >= this.maxTime) {
+      this.playhead = this.minTime;
+    }
+    this.playing = true;
+    this.lastFrameTs = performance.now();
+    const tick = (now) => {
+      if (!this.playing) {
+        return;
+      }
+      const dtSeconds = (now - this.lastFrameTs) / 1000;
+      this.lastFrameTs = now;
+      const next =
+        (this.playhead ?? this.minTime) +
+        dtSeconds * PLAYBACK_SECONDS_PER_SECOND;
+      if (next >= this.maxTime) {
+        this.playhead = this.maxTime;
+        this.playing = false;
+        this.draw();
+        return;
+      }
+      this.playhead = next;
+      this.draw();
+      this.rafId = requestAnimationFrame(tick);
+    };
+    this.rafId = requestAnimationFrame(tick);
+  }
+
+  pause() {
+    this.playing = false;
+    if (this.rafId) {
+      cancelAnimationFrame(this.rafId);
+      this.rafId = null;
+    }
+  }
+
+  @action
+  onTimelineInput(e) {
+    this.pause();
+    const v = parseInt(e.target.value, 10);
+    // Treat the extreme-right position as "off" so the full dataset is shown
+    // and the user isn't stuck filtering out topics created in the last hour.
+    this.playhead = v >= this.maxTime ? null : v;
+    this.draw();
+  }
+
   <template>
     <div class="embedding-map">
       <div class="embedding-map__header">
@@ -607,6 +763,31 @@ export default class EmbeddingMapViewer extends Component {
           </button>
           <span class="embedding-map__count">
             {{i18n "embedding_map.topics_shown" count=this.visiblePointCount}}
+          </span>
+        </div>
+
+        <div class="embedding-map__timeline">
+          <button
+            type="button"
+            class="btn btn-default embedding-map__play"
+            {{on "click" this.togglePlay}}
+          >
+            {{if
+              this.playing
+              (i18n "embedding_map.pause")
+              (i18n "embedding_map.play")
+            }}
+          </button>
+          <input
+            type="range"
+            class="embedding-map__slider"
+            min={{this.timelineMin}}
+            max={{this.timelineMax}}
+            value={{this.timelineValue}}
+            {{on "input" this.onTimelineInput}}
+          />
+          <span class="embedding-map__playhead-label">
+            {{this.playheadLabel}}
           </span>
         </div>
       </div>

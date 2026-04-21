@@ -67,6 +67,28 @@
     font-size: var(--font-down-1);
   }
 
+  &__timeline {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+    margin-top: 0.5rem;
+  }
+
+  &__play {
+    min-width: 5rem;
+  }
+
+  &__slider {
+    flex: 1;
+  }
+
+  &__playhead-label {
+    min-width: 6rem;
+    color: var(--primary-medium);
+    font-size: var(--font-down-1);
+    font-variant-numeric: tabular-nums;
+  }
+
   &__canvas-wrapper {
     grid-area: canvas;
     position: relative;
