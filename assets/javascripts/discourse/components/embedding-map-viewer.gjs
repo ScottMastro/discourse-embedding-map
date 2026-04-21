@@ -52,6 +52,7 @@ export default class EmbeddingMapViewer extends Component {
 
   @tracked viewMode = "category";
   @tracked hoveredTitle = null;
+  @tracked hoveredClusterIdx = null;
   @tracked hoverX = 0;
   @tracked hoverY = 0;
   @tracked query = "";
@@ -302,11 +303,29 @@ export default class EmbeddingMapViewer extends Component {
 
   drawClusterLabels() {
     const ctx = this.ctx;
-    ctx.font = "12px -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
+    const hoveredIdx = this.hoveredClusterIdx;
 
-    for (const c of this.labeledClusters) {
+    // The hovered cluster may be unlabeled (size < 20) but we still want to
+    // call it out, so merge it into the draw set and render it last so it
+    // paints on top of any neighbors.
+    const toDraw = [...this.labeledClusters];
+    const hoveredCluster =
+      hoveredIdx !== null && hoveredIdx !== undefined
+        ? this.clusters.find((c) => c.idx === hoveredIdx)
+        : null;
+    if (hoveredCluster && !toDraw.includes(hoveredCluster)) {
+      toDraw.push(hoveredCluster);
+    }
+    if (hoveredCluster) {
+      const i = toDraw.indexOf(hoveredCluster);
+      if (i >= 0 && i !== toDraw.length - 1) {
+        toDraw.splice(i, 1);
+        toDraw.push(hoveredCluster);
+      }
+    }
+
+    for (const c of toDraw) {
+      const isHovered = hoveredCluster === c;
       const sx = c.cx * this.scale + this.offsetX;
       const sy = c.cy * this.scale + this.offsetY;
       const text = c.label || c.keywords?.slice(0, 2).join(", ");
@@ -314,19 +333,29 @@ export default class EmbeddingMapViewer extends Component {
         continue;
       }
 
-      const metrics = ctx.measureText(text);
-      const padX = 6;
-      const w = metrics.width + padX * 2;
-      const h = 18;
+      ctx.font = isHovered
+        ? "bold 14px -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
+        : "12px -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
 
-      ctx.fillStyle = "rgba(255, 255, 255, 0.85)";
+      const metrics = ctx.measureText(text);
+      const padX = isHovered ? 8 : 6;
+      const w = metrics.width + padX * 2;
+      const h = isHovered ? 22 : 18;
+
+      ctx.fillStyle = isHovered ? "#fffbe6" : "rgba(255, 255, 255, 0.85)";
       ctx.fillRect(sx - w / 2, sy - h / 2, w, h);
-      ctx.strokeStyle = "rgba(0, 0, 0, 0.15)";
+      ctx.strokeStyle = isHovered
+        ? this.clusterColorFor(c.idx)
+        : "rgba(0, 0, 0, 0.15)";
+      ctx.lineWidth = isHovered ? 2 : 1;
       ctx.strokeRect(sx - w / 2, sy - h / 2, w, h);
 
-      ctx.fillStyle = "#333";
+      ctx.fillStyle = isHovered ? "#000" : "#333";
       ctx.fillText(text, sx, sy + 1);
     }
+    ctx.lineWidth = 1;
   }
 
   screenToWorld(sx, sy) {
@@ -409,13 +438,22 @@ export default class EmbeddingMapViewer extends Component {
     const world = this.screenToWorld(e.offsetX, e.offsetY);
     const maxWorldDist = HOVER_RADIUS_PX / this.scale;
     const idx = this.findNearest(world.x, world.y, maxWorldDist);
+    const prevClusterIdx = this.hoveredClusterIdx;
     if (idx >= 0) {
       const p = this.points[idx];
       this.hoveredTitle = p[TITLE];
+      this.hoveredClusterIdx = p[CLUSTER_IDX];
       this.hoverX = e.offsetX;
       this.hoverY = e.offsetY;
     } else {
       this.hoveredTitle = null;
+      this.hoveredClusterIdx = null;
+    }
+    // Only redraw the canvas when the cluster under the cursor changes —
+    // pointer moves within a single cluster happen constantly and don't
+    // affect what's drawn.
+    if (this.isClusterView && prevClusterIdx !== this.hoveredClusterIdx) {
+      this.draw();
     }
   }
 
@@ -442,7 +480,11 @@ export default class EmbeddingMapViewer extends Component {
   @action
   onPointerLeave() {
     this.hoveredTitle = null;
+    this.hoveredClusterIdx = null;
     this.dragging = false;
+    if (this.isClusterView) {
+      this.draw();
+    }
   }
 
   @action

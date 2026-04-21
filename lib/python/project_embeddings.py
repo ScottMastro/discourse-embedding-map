@@ -83,11 +83,10 @@ def run_umap(vectors, n_components, n_neighbors, min_dist, label):
     return out
 
 
-def run_hdbscan(vectors_5d):
+def run_hdbscan(vectors_5d, min_cluster_size):
     import hdbscan
 
     n = len(vectors_5d)
-    min_cluster_size = max(20, n // 500)
     log(f"HDBSCAN (min_cluster_size={min_cluster_size}) on {n} points")
     t0 = time.time()
     clusterer = hdbscan.HDBSCAN(
@@ -223,6 +222,7 @@ def main():
     max_points = int(os.environ.get("EMBEDDING_MAP_MAX_POINTS", "50000"))
     n_neighbors = int(os.environ.get("EMBEDDING_MAP_N_NEIGHBORS", "15"))
     min_dist = float(os.environ.get("EMBEDDING_MAP_MIN_DIST", "0.1"))
+    min_cluster_size = int(os.environ.get("EMBEDDING_MAP_MIN_CLUSTER_SIZE", "25"))
 
     with psycopg.connect(dsn) as conn:
         log(f"loading embeddings (model_id={model_id}, max={max_points})")
@@ -240,7 +240,7 @@ def main():
         keywords = {}
         if not SKIP_CLUSTERING:
             coords_5d = run_umap(vectors, 5, n_neighbors, min_dist, "cluster")
-            cluster_labels = run_hdbscan(coords_5d)
+            cluster_labels = run_hdbscan(coords_5d, min_cluster_size)
             log("extracting keywords (c-TF-IDF)")
             keywords = extract_keywords(cluster_labels, titles)
 

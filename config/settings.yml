@@ -18,3 +18,7 @@ embedding_map:
     default: 50000
     min: 1000
     max: 500000
+  embedding_map_min_cluster_size:
+    default: 25
+    min: 5
+    max: 500

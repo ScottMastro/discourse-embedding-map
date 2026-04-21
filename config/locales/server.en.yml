@@ -5,3 +5,4 @@ en:
     embedding_map_umap_n_neighbors: "UMAP n_neighbors parameter. Higher values emphasize global structure; lower values preserve local clustering."
     embedding_map_umap_min_dist: "UMAP min_dist parameter. Lower values yield tighter, more defined clusters."
     embedding_map_max_points: "Maximum number of topics projected. The most recent topics are selected when the forum exceeds this limit."
+    embedding_map_min_cluster_size: "HDBSCAN minimum cluster size. Lower values produce more, smaller clusters; higher values produce fewer, larger clusters."
