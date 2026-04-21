@@ -83,6 +83,29 @@ def run_umap(vectors, n_components, n_neighbors, min_dist, label):
     return out
 
 
+def assign_noise_to_nearest(labels, vectors):
+    """Give HDBSCAN noise points (-1) a home by assigning each to the
+    cluster whose centroid in `vectors` is closest. Keeps the density-based
+    cluster shapes HDBSCAN found while leaving no orphans on the map."""
+    labels = labels.copy()
+    noise_mask = labels == -1
+    n_noise = int(noise_mask.sum())
+    n_clustered = int((labels >= 0).sum())
+    if n_noise == 0 or n_clustered == 0:
+        return labels
+
+    unique = np.unique(labels[labels >= 0])
+    centroids = np.stack([vectors[labels == c].mean(axis=0) for c in unique])
+    noise_pts = vectors[noise_mask]
+
+    # Squared Euclidean to each centroid; argmin picks the closest cluster.
+    dists = ((noise_pts[:, None, :] - centroids[None, :, :]) ** 2).sum(axis=2)
+    nearest = unique[dists.argmin(axis=1)]
+    labels[noise_mask] = nearest
+    log(f"assigned {n_noise} noise points to nearest cluster")
+    return labels
+
+
 def run_hdbscan(vectors_5d, min_cluster_size):
     import hdbscan
 
@@ -256,11 +279,16 @@ def main():
         supercluster_keywords = {}
         if not SKIP_CLUSTERING:
             coords_5d = run_umap(vectors, 5, n_neighbors, min_dist, "cluster")
+
             cluster_labels = run_hdbscan(coords_5d, min_cluster_size)
+            cluster_labels = assign_noise_to_nearest(cluster_labels, coords_5d)
             log("extracting keywords for clusters (c-TF-IDF)")
             cluster_keywords = extract_keywords(cluster_labels, titles)
 
             supercluster_labels = run_hdbscan(coords_5d, min_supercluster_size)
+            supercluster_labels = assign_noise_to_nearest(
+                supercluster_labels, coords_5d
+            )
             log("extracting keywords for superclusters (c-TF-IDF)")
             supercluster_keywords = extract_keywords(supercluster_labels, titles)
 
